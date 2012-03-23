@@ -94,8 +94,10 @@ _size_for_distro
 distro_name=debian
 base_url=http://ftp.debian.org/debian/dists
 dists=""
-dists="${dists} lenny" 	
-dists="${dists} squeeze-proposed-updates squeeze-updates squeeze"
+dists="${dists} oldstable-proposed-updates oldstable"
+dists="${dists} stable-proposed-updates stable-updates stable"
+dists="${dists} testing-proposed-updates testing"
+dists="${dists} unstable"
 components="main contrib non-free"
 archs="binary-i386 binary-amd64"
 _size_for_distro
@@ -103,8 +105,9 @@ _size_for_distro
 distro_name=debian-security
 base_url=http://security.debian.org/debian-security/dists
 dists=""
-dists="${dists} lenny/updates"
-dists="${dists} squeeze/updates"
+dists="${dists} oldstable/updates"
+dists="${dists} stable/updates"
+dists="${dists} testing/updates"
 components="main contrib non-free"
 archs="binary-i386 binary-amd64"
 _size_for_distro
