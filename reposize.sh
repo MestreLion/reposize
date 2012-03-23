@@ -32,17 +32,10 @@
 # Packages.gz always then remove the file existence condition before the call to
 # _wget_size: "[ -e /tmp/${dist/\//_}_${component/\//_}_${arch} ] ||"
 
-_wget_size() {
-	wget $1 -O - | zcat | sed 's/Installed-Size://' | grep Size | 
-	awk '/Size:/ {pkgsize+=$2} END {print "package size = "pkgsize" Bytes"}'
-}
+fatal() { [[ "$1" ]] && printf "%s\n" "$self: $1" >&2 ; exit "${2:-1}" ; }
 
-_store() {
-	local size=$(sed -e 's/package size = \(.*\) Bytes/\1/')
-	size=${size:-0}
-	cat > $1 <<-EOT
-		${size}
-	EOT
+_size_for_repo() {
+	zcat "$1" | awk '$1=="Size:"{size+=$2} END{print size}' | tee "$2"
 }
 
 _size_for_distro() {
@@ -50,25 +43,39 @@ _size_for_distro() {
 	for dist in $dists ; do
 		for component in $components ; do
 			for arch in $archs ; do
-				[ -e /tmp/${dist/\//_}_${component/\//_}_${arch} ] || ( _wget_size ${base_url}/${dist}/${component}/${arch}/Packages.gz | _store /tmp/${dist/\//_}_${component/\//_}_${arch} )
-				distro_total=$(( distro_total + $(cat /tmp/${dist/\//_}_${component/\//_}_${arch}) ))
+				url=${base_url}/${dist}/${component}/${arch}
+				cachefile=${cachedir}/${dist/\//_}_${component/\//_}_${arch}.gz
+				if [[ -e "$cachefile" ]] ; then
+					: #curl -o "$cachefile" --time-cond "$cachefile" "$url/Packages.gz"
+				else
+					curl -o "$cachefile" "$url/Packages.gz"
+				fi
 			done
 		done 
 	done
-	total=$(( total + distro_total ))
 
 	echo -e "\n${distro_name} DISTRO SIZE SUMMARY"
 	echo "=================================="
 	for dist in $dists ; do
 		for component in $components ; do
 			for arch in $archs ; do
-				echo "${dist} ${component} ${arch}: "$(( $(cat /tmp/${dist/\//_}_${component/\//_}_${arch}) / 1024 / 1024 ))" MB"
+				cachefile="${cachedir}/${dist/\//_}_${component/\//_}_${arch}.gz"
+				sizefile="$cachefile.size.txt"
+				reposize=$(_size_for_repo "$cachefile" "$sizefile")
+				(( distro_total += reposize ))
+				printf "%'8d MB - %s %s %s\n" $((reposize/(1024*1024))) "$dist" "$component" "$arch"
 			done
 		done 
 	done
-	echo "TOTAL DISTRO SIZE = "$(( $distro_total / 1024 / 1024 ))" MB ["$(( $distro_total / 1024 / 1024 / 1024 ))" GB]"
+	(( total += distro_total ))
+	printf "%'8d MB [%'3d GB] - TOTAL DISTRO SIZE\n" $((distro_total/(1024*1024))) $((distro_total/(1024*1024*1024)))
 }
 
+self="${0##*/}"
+cachedir=${XDG_CACHE_HOME:-~/.cache}/reposize
+today=$(date +'%Y%m%d')
+
+mkdir -p "$cachedir" || fatal "could not create cache directory $cachedir"
 
 total=0
 
@@ -82,7 +89,6 @@ dists="${dists} oneiric-backports oneiric-proposed oneiric-security oneiric-upda
 dists="${dists} precise-backports precise-proposed precise-security precise-updates precise"
 components="main multiverse restricted universe"
 archs="binary-i386 binary-amd64"
-archs="binary-amd64"
 _size_for_distro
 
 distro_name=debian
@@ -91,7 +97,7 @@ dists=""
 dists="${dists} lenny" 	
 dists="${dists} squeeze-proposed-updates squeeze-updates squeeze"
 components="main contrib non-free"
-archs="binary-i386 binary-amd64 binary-armel binary-arm"
+archs="binary-i386 binary-amd64"
 _size_for_distro
 
 distro_name=debian-security
@@ -100,15 +106,7 @@ dists=""
 dists="${dists} lenny/updates"
 dists="${dists} squeeze/updates"
 components="main contrib non-free"
-archs="binary-i386 binary-amd64 binary-armel binary-arm"
+archs="binary-i386 binary-amd64"
 _size_for_distro
 
-distro_name=debian-volatile
-base_url=http://volatile.debian.org/debian-volatile/dists
-dists=""
-dists="${dists} lenny/volatile lenny-proposed-updates/volatile"
-components="main contrib non-free"
-archs="binary-i386 binary-amd64 binary-armel binary-arm"
-_size_for_distro
-
-echo -e "\nTOTAL SIZE: "$(( $total / 1024 / 1024 / 1024 ))" GB"
+printf "%'8d MB [%'3d GB] - GRAND TOTAL SIZE\n" $((total/(1024*1024))) $((total/(1024*1024*1024)))
