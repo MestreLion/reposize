@@ -112,4 +112,16 @@ components="main contrib non-free"
 archs="binary-i386 binary-amd64"
 _size_for_distro
 
+distro_name=mint
+base_url=http://packages.linuxmint.com/dists
+dists=""
+dists="${dists} debian"
+dists="${dists} julia"
+dists="${dists} katya"
+dists="${dists} lisa"
+components="backport import main romeo upstream"
+archs="binary-i386 binary-amd64"
+_size_for_distro
+
+
 printf "%'8d MB [%'3d GB] - GRAND TOTAL SIZE\n" $((total/(1024*1024))) $((total/(1024*1024*1024)))
