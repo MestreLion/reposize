@@ -28,9 +28,7 @@
 #
 # Additionally the script saves the size for every collection of packages
 # (Packages.gz) on a temporal archive, so if you run the script twice it won't
-# download the Packages.gz again. If you want to disable this, and download the
-# Packages.gz always then remove the file existence condition before the call to
-# _wget_size: "[ -e /tmp/${dist/\//_}_${component/\//_}_${arch} ] ||"
+# download the Packages.gz again.
 
 
 usage() {
@@ -50,17 +48,20 @@ cat <<-USAGE
 	General Options:
 	-h|--help     - show this page.
 	-v|--verbose  - print more details about what is being done.
+	   --update   - update cache by re-scanning repositories' urls
 
-	Filter Options:
-	--distro    DISTRO,[...]    Distribuitions (debian,ubuntu,mint)
-	--release   RELEASE,[...]   Releases (stable,oneiric,lisa)
-	--component COMPONENT,[...] Components (main,contrib,universe,multiverse)
-	--arch      ARCH,[...]      Architectures (i386,amd64)
+	Filter Options: *
+	--distros    DISTRO,[...]    Distribuitions (debian,ubuntu,linuxmint)
+	--releases   RELEASE,[...]   Releases (stable,oneiric,lisa)
+	--components COMPONENT,[...] Components (main,contrib,universe,multiverse)
+	--archs      ARCH,[...]      Architectures (i386,amd64)
 
 	For each filter option, if blank or ommited, all values are shown. For
 	releases, it will match the begin of the repository name, so --release lucid
 	will also show lucid-backports, lucid-proposed, lucid-security and
-	lucid-updates. For arch, "binary-" will be appended
+	lucid-updates. For archs, "binary-" will be appended
+
+	* Currently only working for single arch: --archs ARCH
 
 	Result Options:
 	--installed        show Installed Size instead. Default is package size
@@ -68,8 +69,8 @@ cat <<-USAGE
 	                   and all its "subgroups", in a single result line.
 
 	Examples:
-	$ $self --distro mint
-	$ $self --arch=i386
+	$ $self --distro linuxmint
+	$ $self --arch=i386 --installed
 	$ $self --arch=amd64 --release=lucid,maverick --component main
 
 	Copyright (C) 2012 Rodrigo Silva (MestreLion) <linux@rodrigosilva.com>
@@ -84,64 +85,83 @@ fatal() { [[ "$1" ]] && printf "%s\n" "$self: $1" >&2 ; exit "${2:-1}" ; }
 
 _set_group() {
 	case "$1" in
-	distro ) group=4 ;;
-	release) group=3 ;;
-	comp   ) group=2 ;;
-	arch   ) group=1 ;;
-	?*     ) invalid "for --collapse: $1" ;;
-	*      ) missing "collapse"
+	distro   ) group=4 ;;
+	release  ) group=3 ;;
+	component) group=2 ;;
+	arch     ) group=1 ;;
+	?*       ) invalid "for --collapse: $1" ;;
+	*        ) missing "collapse"
 	esac
 }
 
 _printrepo() {
-	printf "%'9d MB - %s %s %s\n" $(($1/(1024*1024))) "$2" "$3" "$4"
+	printf "%'9d MB - %s %s %s\n" $(( $1/(1024*1024) )) "$2" "$3" "$4"
+}
+
+_get_repo_info() {
+	local timecond
+	local url="${baseurl}/dists/${1}/${2}/${3}/Packages.gz"
+	local cachefile="${cachedir}/${distro/\//_}_${1/\//_}_${2/\//_}_${3}.gz"
+	local infofile="${cachefile}.info.txt"
+
+	# Download
+	{ ! [[ -f "$cachefile" ]] || (( update )) ; } && {
+		echo "Processing $url"
+		[[ -f "$cachefile" ]] && timecond=( "-S" "--time-cond" "$cachefile" )
+		curl -L -f -s -o "$cachefile" "${timecond[@]}" "$url"
+	}
+
+	# Extract and generate info
+	[[ "$infofile" -nt "$cachefile" ]] || {
+		if [[ -f "$cachefile" ]] ; then zcat "$cachefile"; else echo ""; fi |
+		awk '
+			BEGIN { size=0; inst=0; lblsize="Size:"; lblinst="Installed-Size:" }
+			$1==lblsize {size += $2}
+			$1==lblinst {inst += $2 * 1024}
+			END{ printf("%s %.0f\n",lblsize,size);printf("%s %.0f\n",lblinst,inst) }
+		' > "$infofile"
+	}
 }
 
 _size_for_repo() {
-	[[ -f "$1" ]] || { echo 0 ; return 1 ; }
-	if (( installed )) ; then
-		zcat "$1" | awk -v size=0 '$1=="Installed-Size:"{size+=1024*$2} END{print size}'
-	else
-		zcat "$1" | awk -v size=0 '$1=="Size:"{size+=$2} END{print size}'
-	fi
+	local infofile="$cachedir/${distro/\//_}_${1/\//_}_${2/\//_}_$3.gz.info.txt"
+	if (( installed )) ; then field="Installed-Size:" ; else field="Size:"; fi
+	awk -v "field=$field" '$1==field{printf("%.0f\n",$2)}' "$infofile"
 }
 
 _size_for_distro() {
 	local distro_total=0
 	local reposize=0
 	local subtotal=0
-	for dist in $dists ; do
-		for component in $components ; do
+
+	# Download and cache loop
+	for rel in $releases ; do
+		for comp in $components ; do
 			for arch in $archs ; do
-				url="${base_url}/${dist}/${component}/${arch}"
-				cachefile="${cachedir}/${distro_name/\//_}_${dist/\//_}_${component/\//_}_${arch}.gz"
-				if [[ -f "$cachefile" ]] ; then
-					: #curl -o "$cachefile" --time-cond "$cachefile" "$url/Packages.gz"
-				else
-					curl -L -f -s -S -o "$cachefile" "$url/Packages.gz"
-				fi
+				_get_repo_info "$rel" "$comp" "$arch"
 			done
 		done
 	done
 
-	echo -e "\n${distro_name} DISTRO${instlabel} SIZE SUMMARY"
+	# Read and show loop
+	echo -e "\n${distro} DISTRO${instlabel} SIZE SUMMARY"
 	echo "===================================="
-	for dist in $dists ; do
-		for component in $components ; do
+	for rel in $releases ; do
+		for comp in $components ; do
 			for arch in $archs ; do
-				cachefile="${cachedir}/${distro_name/\//_}_${dist/\//_}_${component/\//_}_${arch}.gz"
-				sizefile="$cachefile.size.txt"
-				(( reposize = $(_size_for_repo "$cachefile" "$sizefile") ))
+				(( reposize = $(_size_for_repo "$rel" "$comp" "$arch") ))
 				(( subtotal += reposize ))
 				(( distro_total += reposize ))
-				(( group == 0 )) && { _printrepo "$subtotal" "$dist" "$component" "$arch" ; subtotal=0 ; }
+				(( group == 0 )) && { _printrepo "$subtotal" "$rel" "$comp" "$arch" ; subtotal=0 ; }
 			done
-			(( group == 1 )) && { _printrepo "$subtotal" "$dist" "$component" ; subtotal=0 ; }
+			(( group == 1 )) && { _printrepo "$subtotal" "$rel" "$comp" ; subtotal=0 ; }
 		done
-		(( group == 2 )) && { _printrepo "$subtotal" "$dist" ; subtotal=0 ; }
+		(( group == 2 )) && { _printrepo "$subtotal" "$rel" ; subtotal=0 ; }
 	done
 	(( total += distro_total ))
-	printf "%'9d MB [%'6d GB] - TOTAL DISTRO${instlabel} SIZE\n" $((distro_total/(1024*1024))) $((distro_total/(1024*1024*1024)))
+	printf "%'9d MB [%'6d GB] - TOTAL DISTRO${instlabel} SIZE\n\n" \
+		$((distro_total/(1024*1024))) \
+		$((distro_total/(1024*1024*1024)))
 }
 
 self="${0##*/}"
@@ -150,75 +170,92 @@ today=$(date +'%Y%m%d')
 verbose=0
 group=0
 installed=0
+update=0
 instlabel=
 uarch=
 
 # Loop options
 while (( $# )); do
 	case "$1" in
-	-h|--help     ) usage                   ;;
-	-v|--verbose  ) verbose=1               ;;
-	--distro      ) distro_name=            ;;
-	--release     ) dists=                  ;;
-	--component   ) components=             ;;
-	--arch        ) shift ; uarch="binary-$1" ;;
-	--installed   ) installed=1             ;;
-	--collapse    ) shift ; _set_group "$1" ;;
-	--            ) shift        ; break    ;;
-	-*            ) invalid "$1" ; break    ;;
-	*             )                break    ;;
+	-h|--help     ) usage                     ;;
+	-v|--verbose  ) verbose=1                 ;;
+	--update      ) update=1                  ;;
+	--distros     ) udistros=                 ;;
+	--releases    ) ureleases=                ;;
+	--components  ) components=               ;;
+	--archs       ) shift ; uarchs="binary-$1";;
+	--installed   ) installed=1               ;;
+	--collapse    ) shift ; _set_group "$1"   ;;
+	--            ) shift        ; break      ;;
+	-*            ) invalid "$1" ; break      ;;
+	*             )                break      ;;
 	esac
 	shift
 done
 
 (( installed )) && instlabel=" INSTALLED"
 
+type curl >/dev/null 2>&1 ||
+fatal "curl not found. Install it with 'sudo apt-get install curl'"
+
 mkdir -p "$cachedir" || fatal "could not create cache directory $cachedir"
 
 total=0
 
-distro_name=ubuntu
-base_url=http://archive.ubuntu.com/ubuntu/dists
-dists=""
-dists="${dists} lucid-backports lucid-proposed lucid-security lucid-updates lucid"
-dists="${dists} maverick-backports maverick-proposed maverick-security maverick-updates maverick"
-dists="${dists} natty-backports natty-proposed natty-security natty-updates natty"
-dists="${dists} oneiric-backports oneiric-proposed oneiric-security oneiric-updates oneiric"
-dists="${dists} precise-backports precise-proposed precise-security precise-updates precise"
+distro=ubuntu
+baseurl=http://archive.ubuntu.com/ubuntu
+releases=""
+releases+=" lucid-backports lucid-proposed lucid-security lucid-updates lucid"
+releases+=" maverick-backports maverick-proposed maverick-security maverick-updates maverick"
+releases+=" natty-backports natty-proposed natty-security natty-updates natty"
+releases+=" oneiric-backports oneiric-proposed oneiric-security oneiric-updates oneiric"
+releases+=" precise-backports precise-proposed precise-security precise-updates precise"
 components="main multiverse restricted universe"
-archs=${uarch:-"binary-i386 binary-amd64"}
+archs=${uarchs:-"binary-i386 binary-amd64"}
 _size_for_distro
 
-distro_name=debian
-base_url=http://ftp.debian.org/debian/dists
-dists=""
-dists="${dists} oldstable-proposed-updates oldstable"
-dists="${dists} stable-proposed-updates stable-updates stable"
-dists="${dists} testing-proposed-updates testing"
-dists="${dists} unstable"
+distro=ubuntu
+baseurl=http://archive.canonical.com/ubuntu
+releases=""
+releases+=" lucid"
+releases+=" maverick"
+releases+=" natty"
+releases+=" oneiric"
+releases+=" precise"
+components="partner"
+archs=${uarchs:-"binary-i386 binary-amd64"}
+_size_for_distro
+
+distro=debian
+baseurl=http://ftp.debian.org/debian
+releases=""
+releases+=" stable-proposed-updates stable-updates stable"
+releases+=" testing-proposed-updates testing"
+releases+=" unstable"
 components="main contrib non-free"
-archs=${uarch:-"binary-i386 binary-amd64"}
+archs=${uarchs:-"binary-i386 binary-amd64"}
 _size_for_distro
 
-distro_name=debian-security
-base_url=http://security.debian.org/debian-security/dists
-dists=""
-dists="${dists} oldstable/updates"
-dists="${dists} stable/updates"
-dists="${dists} testing/updates"
+distro=debian-security
+baseurl=http://security.debian.org/debian-security
+releases=""
+releases+=" stable/updates"
+releases+=" testing/updates"
 components="main contrib non-free"
-archs=${uarch:-"binary-i386 binary-amd64"}
+archs=${uarchs:-"binary-i386 binary-amd64"}
 _size_for_distro
 
-distro_name=linuxmint
-base_url=http://packages.linuxmint.com/dists
-dists=""
-dists="${dists} debian"
-dists="${dists} julia"
-dists="${dists} katya"
-dists="${dists} lisa"
+distro=linuxmint
+baseurl=http://packages.linuxmint.com
+releases=""
+releases+=" debian"
+releases+=" julia"
+releases+=" katya"
+releases+=" lisa"
 components="backport import main romeo upstream"
-archs=${uarch:-"binary-i386 binary-amd64"}
+archs=${uarchs:-"binary-i386 binary-amd64"}
 _size_for_distro
 
-printf "\n%'9d MB [%'6d GB] - GRAND TOTAL${instlabel} SIZE\n" $((total/(1024*1024))) $((total/(1024*1024*1024)))
+printf "%'9d MB [%'6d GB] - GRAND TOTAL${instlabel} SIZE\n" \
+	$((total/(1024*1024))) \
+	$((total/(1024*1024*1024)))
