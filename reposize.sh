@@ -48,20 +48,20 @@ cat <<-USAGE
 	General Options:
 	-h|--help     - show this page.
 	-v|--verbose  - print more details about what is being done.
-	   --update   - update cache by re-scanning repositories' urls
+	-q|--quiet    - do not print download status or errors
 
-	Filter Options: *
+	Cache Options:
+	   --update   - update cache by re-scanning repositories' urls
+	   --purge    - purge all cache files, forcing re-download of remote files
+
+	Filter Options:
 	--distros    DISTRO,[...]    Distribuitions (debian,ubuntu,linuxmint)
 	--releases   RELEASE,[...]   Releases (stable,oneiric,lisa)
 	--components COMPONENT,[...] Components (main,contrib,universe,multiverse)
 	--archs      ARCH,[...]      Architectures (i386,amd64)
 
-	For each filter option, if blank or ommited, all values are shown. For
-	releases, it will match the begin of the repository name, so --release lucid
-	will also show lucid-backports, lucid-proposed, lucid-security and
-	lucid-updates. For archs, "binary-" will be appended
-
-	* Currently only working for single arch: --archs ARCH
+	For each filter option, if blank or ommited, all values are shown.
+	For archs, "binary-" will be appended to each selected arch
 
 	Result Options:
 	--installed        show Installed Size instead. Default is package size
@@ -69,9 +69,9 @@ cat <<-USAGE
 	                   and all its "subgroups", in a single result line.
 
 	Examples:
-	$ $self --distro linuxmint
-	$ $self --arch=i386 --installed
-	$ $self --arch=amd64 --release=lucid,maverick --component main
+	$self --update --collapse arch
+	$self --archs i386 --installed --collapse component
+	$self --distros ubuntu --releases lucid,maverick --components main
 
 	Copyright (C) 2012 Rodrigo Silva (MestreLion) <linux@rodrigosilva.com>
 	License: GPLv3 or later. See <http://www.gnu.org/licenses/gpl.html>
@@ -94,6 +94,13 @@ _set_group() {
 	esac
 }
 
+_show_distro(){
+	(( "${#udistros[@]}" )) || return 0
+	local dist
+	for dist in "${udistros[@]}"; do [[ "$1" == "$dist" ]] && return 0; done
+	return 1
+}
+
 _printrepo() {
 	printf "%'9d MB - %s %s %s\n" $(( $1/(1024*1024) )) "$2" "$3" "$4"
 }
@@ -106,7 +113,7 @@ _get_repo_info() {
 
 	# Download
 	{ ! [[ -f "$cachefile" ]] || (( update )) ; } && {
-		echo "Processing $url"
+		(( quiet )) || echo "Processing $url"
 		[[ -f "$cachefile" ]] && timecond=( "-S" "--time-cond" "$cachefile" )
 		curl -L -f -s -o "$cachefile" "${timecond[@]}" "$url"
 	}
@@ -135,9 +142,9 @@ _size_for_distro() {
 	local subtotal=0
 
 	# Download and cache loop
-	for rel in $releases ; do
-		for comp in $components ; do
-			for arch in $archs ; do
+	for rel in "${releases[@]}" ; do
+		for comp in "${components[@]}" ; do
+			for arch in "${archs[@]}" ; do
 				_get_repo_info "$rel" "$comp" "$arch"
 			done
 		done
@@ -146,9 +153,9 @@ _size_for_distro() {
 	# Read and show loop
 	echo -e "\n${distro} DISTRO${instlabel} SIZE SUMMARY"
 	echo "===================================="
-	for rel in $releases ; do
-		for comp in $components ; do
-			for arch in $archs ; do
+	for rel in "${releases[@]}" ; do
+		for comp in "${components[@]}" ; do
+			for arch in "${archs[@]}" ; do
 				(( reposize = $(_size_for_repo "$rel" "$comp" "$arch") ))
 				(( subtotal += reposize ))
 				(( distro_total += reposize ))
@@ -168,93 +175,138 @@ self="${0##*/}"
 cachedir=${XDG_CACHE_HOME:-~/.cache}/reposize
 today=$(date +'%Y%m%d')
 verbose=0
-group=0
-installed=0
+quiet=0
 update=0
+installed=0
+purge=0
+group=0
+total=0
+
 instlabel=
-uarch=
+udistros=()
+ureleases=()
+ucomponents=()
+uarch=()
 
 # Loop options
 while (( $# )); do
 	case "$1" in
-	-h|--help     ) usage                     ;;
-	-v|--verbose  ) verbose=1                 ;;
-	--update      ) update=1                  ;;
-	--distros     ) udistros=                 ;;
-	--releases    ) ureleases=                ;;
-	--components  ) components=               ;;
-	--archs       ) shift ; uarchs="binary-$1";;
-	--installed   ) installed=1               ;;
-	--collapse    ) shift ; _set_group "$1"   ;;
-	--            ) shift        ; break      ;;
-	-*            ) invalid "$1" ; break      ;;
-	*             )                break      ;;
+	-h|--help     ) usage                    ;;
+	-v|--verbose  ) verbose=1                ;;
+	-q|--quiet    ) quiet=1                  ;;
+	--update      ) update=1                 ;;
+	--installed   ) installed=1              ;;
+	--purge       ) purge=1                  ;;
+	--collapse    ) shift ; _set_group "$1"  ;;
+	--distros     ) shift ; IFS="," read -a udistros    <<< "$1" ;;
+	--releases    ) shift ; IFS="," read -a ureleases   <<< "$1" ;;
+	--components  ) shift ; IFS="," read -a ucomponents <<< "$1" ;;
+	--archs       ) shift ; IFS="," read -a uarchs      <<< "$1" ;;
+	*             ) invalid "$1" ;;
 	esac
 	shift
 done
 
+
+# Handle user input
+(( purge )) && { rm -rf "$cachedir" ; echo "$self: purged $cachedir" ; exit ; }
 (( installed )) && instlabel=" INSTALLED"
 
+for i in "${!uarchs[@]}"; do uarchs[i]="binary-${uarchs[i]}"; done
+
+# Check if external tools are present
 type curl >/dev/null 2>&1 ||
 fatal "curl not found. Install it with 'sudo apt-get install curl'"
 
+
 mkdir -p "$cachedir" || fatal "could not create cache directory $cachedir"
 
-total=0
-
 distro=ubuntu
-baseurl=http://archive.ubuntu.com/ubuntu
-releases=""
-releases+=" lucid-backports lucid-proposed lucid-security lucid-updates lucid"
-releases+=" maverick-backports maverick-proposed maverick-security maverick-updates maverick"
-releases+=" natty-backports natty-proposed natty-security natty-updates natty"
-releases+=" oneiric-backports oneiric-proposed oneiric-security oneiric-updates oneiric"
-releases+=" precise-backports precise-proposed precise-security precise-updates precise"
-components="main multiverse restricted universe"
-archs=${uarchs:-"binary-i386 binary-amd64"}
-_size_for_distro
+if _show_distro "$distro"; then
+	baseurl=http://archive.ubuntu.com/ubuntu
+	if (( ${#ureleases[@]} )); then releases=("${ureleases[@]}")
+	else
+		releases=()
+		releases+=(lucid    lucid-backports    lucid-proposed    lucid-security    lucid-updates)
+		releases+=(maverick maverick-backports maverick-proposed maverick-security maverick-updates)
+		releases+=(natty    natty-backports    natty-proposed    natty-security    natty-updates)
+		releases+=(oneiric  oneiric-backports  oneiric-proposed  oneiric-security  oneiric-updates)
+		releases+=(precise  precise-backports  precise-proposed  precise-security  precise-updates)
+	fi
+	if (( ${#ucomponents[@]} )); then components=("${ucomponents[@]}")
+	else components=("main" "multiverse" "restricted" "universe") ; fi
+	if (( ${#uarchs[@]} )); then archs=("${uarchs[@]}")
+	else archs=("binary-i386" "binary-amd64") ; fi
+	_size_for_distro
 
-distro=ubuntu
-baseurl=http://archive.canonical.com/ubuntu
-releases=""
-releases+=" lucid"
-releases+=" maverick"
-releases+=" natty"
-releases+=" oneiric"
-releases+=" precise"
-components="partner"
-archs=${uarchs:-"binary-i386 binary-amd64"}
-_size_for_distro
+	baseurl=http://archive.canonical.com/ubuntu
+	if (( ${#ureleases[@]} )); then releases=("${ureleases[@]}")
+	else
+		releases=()
+		releases+=(lucid)
+		releases+=(maverick)
+		releases+=(natty)
+		releases+=(oneiric)
+		releases+=(precise)
+	fi
+	if (( ${#ucomponents[@]} )); then components=("${ucomponents[@]}")
+	else components=("partner") ; fi
+	if (( ${#uarchs[@]} )); then archs=("${uarchs[@]}")
+	else archs=("binary-i386" "binary-amd64") ; fi
+	_size_for_distro
+fi
 
 distro=debian
-baseurl=http://ftp.debian.org/debian
-releases=""
-releases+=" stable-proposed-updates stable-updates stable"
-releases+=" testing-proposed-updates testing"
-releases+=" unstable"
-components="main contrib non-free"
-archs=${uarchs:-"binary-i386 binary-amd64"}
-_size_for_distro
+if _show_distro "$distro"; then
+	baseurl=http://ftp.debian.org/debian
+	if (( ${#ureleases[@]} )); then releases=("${ureleases[@]}")
+	else
+		releases=()
+		releases+=(stable-proposed-updates stable-updates stable)
+		releases+=(testing-proposed-updates testing)
+		releases+=(unstable)
+	fi
+	if (( ${#ucomponents[@]} )); then components=("${ucomponents[@]}")
+	else components=("main" "contrib" "non-free") ; fi
+	if (( ${#uarchs[@]} )); then archs=("${uarchs[@]}")
+	else archs=("binary-i386" "binary-amd64") ; fi
+	_size_for_distro
+fi
 
 distro=debian-security
-baseurl=http://security.debian.org/debian-security
-releases=""
-releases+=" stable/updates"
-releases+=" testing/updates"
-components="main contrib non-free"
-archs=${uarchs:-"binary-i386 binary-amd64"}
-_size_for_distro
+if _show_distro "$distro"; then
+	baseurl=http://security.debian.org/debian-security
+	if (( ${#ureleases[@]} )); then releases=("${ureleases[@]}")
+	else
+		releases=()
+		releases+=(stable/updates)
+		releases+=(testing/updates)
+	fi
+	if (( ${#ucomponents[@]} )); then components=("${ucomponents[@]}")
+	else components=("main" "contrib" "non-free") ; fi
+	if (( ${#uarchs[@]} )); then archs=("${uarchs[@]}")
+	else archs=("binary-i386" "binary-amd64") ; fi
+	_size_for_distro
+fi
 
 distro=linuxmint
-baseurl=http://packages.linuxmint.com
-releases=""
-releases+=" debian"
-releases+=" julia"
-releases+=" katya"
-releases+=" lisa"
-components="backport import main romeo upstream"
-archs=${uarchs:-"binary-i386 binary-amd64"}
-_size_for_distro
+if _show_distro "$distro"; then
+	baseurl=http://packages.linuxmint.com
+	if (( ${#ureleases[@]} )); then releases=("${ureleases[@]}")
+	else
+		releases=()
+		releases+=(debian)
+		releases+=(julia)
+		releases+=(katya)
+		releases+=(lisa)
+		releases+=(maya)
+	fi
+	if (( ${#ucomponents[@]} )); then components=("${ucomponents[@]}")
+	else components=("backport" "import" "main" "romeo" "upstream") ; fi
+	if (( ${#uarchs[@]} )); then archs=("${uarchs[@]}")
+	else archs=("binary-i386" "binary-amd64") ; fi
+	_size_for_distro
+fi
 
 printf "%'9d MB [%'6d GB] - GRAND TOTAL${instlabel} SIZE\n" \
 	$((total/(1024*1024))) \
