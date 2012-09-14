@@ -30,7 +30,6 @@
 # (Packages.gz) on a temporal archive, so if you run the script twice it won't
 # download the Packages.gz again.
 
-
 usage() {
 cat <<- USAGE
 	Usage: $self [options]
@@ -102,7 +101,7 @@ _show_distro(){
 }
 
 _printrepo() {
-	printf "%'9d MB - %s %s %s\n" $(( $1/(1024*1024) )) "$2" "$3" "$4"
+	printf "%'9d MiB - %s %s %s\n" $(( $1/(1024*1024) )) "$2" "$3" "$4"
 }
 
 _get_repo_info() {
@@ -166,7 +165,7 @@ _size_for_distro() {
 		(( group == 2 )) && { _printrepo "$subtotal" "$rel" ; subtotal=0 ; }
 	done
 	(( total += distro_total ))
-	printf "%'9d MB [%'6d GB] - TOTAL DISTRO${instlabel} SIZE\n\n" \
+	printf "%'9d MiB [%'6d GiB] - TOTAL DISTRO${instlabel} SIZE\n\n" \
 		$((distro_total/(1024*1024))) \
 		$((distro_total/(1024*1024*1024)))
 }
@@ -308,6 +307,6 @@ if _show_distro "$distro"; then
 	_size_for_distro
 fi
 
-printf "%'9d MB [%'6d GB] - GRAND TOTAL${instlabel} SIZE\n" \
+printf "%'9d MiB [%'6d GiB] - GRAND TOTAL${instlabel} SIZE\n" \
 	$((total/(1024*1024))) \
 	$((total/(1024*1024*1024)))
